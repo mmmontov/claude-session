@@ -9,10 +9,16 @@
 Нужен установленный [Claude Code](https://claude.com/claude-code). Затем одна команда:
 
 ```bash
-git clone <URL-этого-репозитория> ~/.claude/skills/claude-session
+npx skills add mmmontov/claude-session -g
 ```
 
-(или распакуйте архив с этой папкой в `~/.claude/skills/claude-session`)
+(это CLI реестра [skills.sh](https://www.skills.sh/); флаг `-g` ставит скилл глобально в `~/.claude/skills`)
+
+Без node/npm — просто через git:
+
+```bash
+git clone https://github.com/mmmontov/claude-session ~/.claude/skills/claude-session
+```
 
 Дальше откройте Claude Code и скажите ему:
 
