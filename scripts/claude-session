@@ -1,0 +1,244 @@
+#!/bin/bash
+# cs / claude-session — постоянные Claude Code-сессии в tmux.
+#
+# Каждая сессия — это tmux-сессия, внутри которой claude-restart-loop.sh
+# держит Claude Code запущенным (перезапускает и продолжает разговор,
+# если тот упал или вышел). Список сессий хранится в
+# ~/.config/claude-sessions.conf и поднимается при загрузке системы
+# (systemd user unit claude-sessions.service → claude-tmux-manager.sh).
+#
+# Telegram-бот один (~/.claude/channels/telegram/.env), поэтому флаг
+# "channels" может держать только одна сессия — скрипт следит за этим сам.
+#
+# Использование:
+#   cs                          Список сессий (то же, что cs list)
+#   cs <имя>                    Подключиться к сессии (запустит, если не запущена)
+#   cs new <имя> <папка>        Создать/обновить обычную сессию (без Telegram)
+#   cs telegram <имя> [папка]   Отдать сессии Telegram-бота (заберёт у прежней).
+#                               <папка> обязательна при первом создании.
+#   cs list                     Кто где работает, у кого бот, кто подключён
+#   cs attach [имя]             Подключиться (без имени — к единственной запущенной)
+#   cs rm <имя>                 Убить сессию и убрать из конфига
+#
+# Выйти из сессии, не убивая её: Ctrl+B, затем D.
+set -u
+conf="$HOME/.config/claude-sessions.conf"
+
+# restart-loop лежит рядом с этим скриптом (в репо или через симлинк);
+# fallback — ~/.local/bin для нестандартных установок.
+script_dir="$(dirname "$(readlink -f "$0")")"
+loop="$script_dir/claude-restart-loop.sh"
+[ -x "$loop" ] || loop="$HOME/.local/bin/claude-restart-loop.sh"
+
+usage() {
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+ensure_conf() { touch "$conf"; }
+
+# Print non-comment, non-blank conf lines as-is.
+entries() {
+  ensure_conf
+  grep -vE '^\s*(#|$)' "$conf"
+}
+
+get_entry() { # name -> "name:dir:mode" or empty
+  entries | awk -F: -v n="$1" '$1==n {print; found=1} END{if(!found) exit 1}'
+}
+
+write_entries() { # reads new entry lines on stdin, replaces the whole file (comments kept)
+  local tmp
+  tmp=$(mktemp)
+  grep -E '^\s*(#|$)' "$conf" > "$tmp" 2>/dev/null || true
+  cat >> "$tmp"
+  mv "$tmp" "$conf"
+}
+
+upsert_entry() { # name dir mode(optional)
+  local name="$1" dir="$2" mode="${3:-}"
+  local line="$name:$dir"
+  [ -n "$mode" ] && line="$name:$dir:$mode"
+  {
+    entries | awk -F: -v n="$name" '$1!=n'
+    echo "$line"
+  } | write_entries
+}
+
+strip_channels_from_others() { # keep_name
+  local keep="$1"
+  entries | awk -F: -v keep="$keep" 'BEGIN{OFS=":"} { if($1!=keep && $3=="channels") $3=""; print }' \
+    | sed -E 's/:+$//' | write_entries
+}
+
+session_running() { tmux has-session -t "$1" 2>/dev/null; }
+
+launch() { # name dir mode
+  local name="$1" dir="$2" mode="$3"
+  mkdir -p "$dir"
+  if [ "$mode" = "channels" ]; then
+    tmux new-session -d -s "$name" -c "$dir" "env CLAUDE_CHANNELS=1 '$loop' '$dir'"
+  else
+    tmux new-session -d -s "$name" -c "$dir" "$loop '$dir'"
+  fi
+}
+
+respawn() { # name dir mode
+  local name="$1" dir="$2" mode="$3"
+  if [ "$mode" = "channels" ]; then
+    tmux respawn-pane -k -t "$name" "cd '$dir' && env CLAUDE_CHANNELS=1 '$loop' '$dir'"
+  else
+    tmux respawn-pane -k -t "$name" "cd '$dir' && '$loop' '$dir'"
+  fi
+}
+
+# attach из обычного терминала, switch-client — если мы уже внутри tmux
+# (вложенный attach tmux не разрешает).
+go_to_session() { # name
+  if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$1"
+  else
+    exec tmux attach -t "$1"
+  fi
+}
+
+cmd_new() {
+  local name="${1:?укажите имя сессии}" dir="${2:?укажите папку проекта}"
+  dir="$(realpath -m "$dir")"
+  local existing
+  existing="$(get_entry "$name" || true)"
+  local mode=""
+  [ -n "$existing" ] && mode="$(echo "$existing" | awk -F: '{print $3}')"
+  upsert_entry "$name" "$dir" "$mode"
+  if session_running "$name"; then
+    echo "Сессия '$name' уже запущена (не трогаю); папка на будущие перезапуски: $dir."
+  else
+    launch "$name" "$dir" "$mode"
+    echo "Запустил сессию '$name' в $dir (Telegram: ${mode:-выкл})."
+  fi
+  echo "Подключиться: cs $name"
+}
+
+cmd_telegram() {
+  local name="${1:?укажите имя сессии}" dir="${2:-}"
+  local existing
+  existing="$(get_entry "$name" || true)"
+  if [ -z "$existing" ]; then
+    [ -n "$dir" ] || { echo "Сессии '$name' ещё нет — укажите папку: cs telegram $name /путь/к/проекту" >&2; exit 1; }
+  else
+    dir="${dir:-$(echo "$existing" | awk -F: '{print $2}')}"
+  fi
+  dir="$(realpath -m "$dir")"
+
+  # find whoever currently has it, to demote after the switch
+  local prev
+  prev="$(entries | awk -F: -v n="$name" '$3=="channels" && $1!=n {print $1}')"
+
+  upsert_entry "$name" "$dir" "channels"
+  strip_channels_from_others "$name"
+
+  if session_running "$name"; then
+    respawn "$name" "$dir" "channels"
+  else
+    launch "$name" "$dir" "channels"
+  fi
+  echo "Теперь Telegram-бот у сессии '$name' ($dir)."
+
+  if [ -n "$prev" ]; then
+    local prev_dir
+    prev_dir="$(get_entry "$prev" | awk -F: '{print $2}')"
+    if session_running "$prev"; then
+      respawn "$prev" "$prev_dir" ""
+      echo "У '$prev' бот отключён, сессия перезапущена без Telegram."
+    fi
+  fi
+}
+
+cmd_list() {
+  ensure_conf
+  if [ -z "$(entries)" ]; then
+    echo "Сессий пока нет. Создать: cs new <имя> <папка>"
+    return
+  fi
+  # session_attached > 0 — к сессии сейчас подключён хотя бы один клиент
+  local att
+  att="$(tmux list-sessions -F '#{session_name}:#{session_attached}' 2>/dev/null || true)"
+  {
+    printf 'ИМЯ\tПАПКА\tTELEGRAM\tЗАПУЩЕНА\tПОДКЛЮЧЕН\n'
+    entries | while IFS=: read -r name dir mode; do
+      local running="нет" attached="-"
+      if session_running "$name"; then
+        running="да"
+        attached="нет"
+        case "$(echo "$att" | awk -F: -v n="$name" '$1==n {print $2}')" in
+          ''|0) ;;
+          *) attached="да" ;;
+        esac
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "${mode:-выкл}" "$running" "$attached"
+    done
+  } | column -t -s $'\t'
+}
+
+cmd_attach() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    # без имени: если запущена ровно одна наша сессия — идём в неё
+    local running
+    running="$(entries | awk -F: '{print $1}' | while read -r n; do session_running "$n" && echo "$n"; done)"
+    local count
+    count="$(echo "$running" | grep -c . || true)"
+    if [ "$count" = 1 ]; then
+      name="$running"
+    else
+      echo "Укажите, куда подключиться: cs <имя>" >&2
+      echo >&2
+      cmd_list >&2
+      exit 1
+    fi
+  fi
+
+  local entry
+  entry="$(get_entry "$name" || true)"
+  if [ -z "$entry" ]; then
+    echo "Сессии '$name' нет. Создать: cs new $name <папка>" >&2
+    echo >&2
+    cmd_list >&2
+    exit 1
+  fi
+
+  if ! session_running "$name"; then
+    local dir mode
+    dir="$(echo "$entry" | awk -F: '{print $2}')"
+    mode="$(echo "$entry" | awk -F: '{print $3}')"
+    launch "$name" "$dir" "$mode"
+    echo "Сессия '$name' была остановлена — запустил."
+  fi
+  go_to_session "$name"
+}
+
+cmd_rm() {
+  local name="${1:?укажите имя сессии}"
+  local entry mode=""
+  entry="$(get_entry "$name" || true)"
+  [ -n "$entry" ] && mode="$(echo "$entry" | awk -F: '{print $3}')"
+  session_running "$name" && tmux kill-session -t "$name"
+  entries | awk -F: -v n="$name" '$1!=n' | write_entries
+  echo "Удалил '$name'."
+  if [ "$mode" = "channels" ]; then
+    echo "Внимание: эта сессия держала Telegram-бота — теперь бот никому не отвечает."
+    echo "Назначить новую: cs telegram <имя> [папка]"
+  fi
+}
+
+case "${1:-}" in
+  "") cmd_list ;;
+  new) shift; cmd_new "$@" ;;
+  telegram) shift; cmd_telegram "$@" ;;
+  list|ls) cmd_list ;;
+  attach|a) shift; cmd_attach "$@" ;;
+  rm) shift; cmd_rm "$@" ;;
+  help|-h|--help) usage ;;
+  -*) usage ;;
+  *) cmd_attach "$1" ;;
+esac
