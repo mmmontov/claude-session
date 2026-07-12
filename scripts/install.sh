@@ -23,8 +23,23 @@ if ! command -v claude >/dev/null 2>&1; then
   warn+=("команда claude не найдена — установите Claude Code: https://claude.com/claude-code")
 fi
 
-# --- симлинки в ~/.local/bin -----------------------------------------------
+# bun нужен MCP-серверу Telegram-плагина (.mcp.json плагина запускает его
+# через "command": "bun"). Без bun плагин не поднимается вообще без единой
+# видимой ошибки в транскрипте — бот просто молчит. Симлинк кладём в
+# ~/.local/bin, а не полагаемся на PATH из ~/.bashrc, который трогает
+# bun-инсталлятор: свежеустановленный bun там появится только в новых
+# login-шеллах, а не в уже запущенных tmux-сессиях claude-session.
 mkdir -p "$bin"
+if ! command -v bun >/dev/null 2>&1; then
+  if curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 && [ -x "$HOME/.bun/bin/bun" ]; then
+    ln -sf "$HOME/.bun/bin/bun" "$bin/bun"
+    ok+=("bun установлен и слинкован в $bin (нужен для Telegram-плагина)")
+  else
+    warn+=("не удалось установить bun — без него Telegram-плагин не запустится. Вручную: curl -fsSL https://bun.sh/install | bash && ln -sf ~/.bun/bin/bun ~/.local/bin/bun")
+  fi
+fi
+
+# --- симлинки в ~/.local/bin -----------------------------------------------
 for f in claude-session claude-restart-loop.sh claude-tmux-manager.sh; do
   ln -sf "$repo/scripts/$f" "$bin/$f"
 done
