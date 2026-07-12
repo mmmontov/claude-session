@@ -47,6 +47,13 @@ cs rm <имя>                 убить сессию и убрать из ко
 
 Триггеры: «установи/настрой claude-session», «настрой cs», первый запуск.
 
+0. Проверь, есть ли рядом с этим SKILL.md папка `scripts/`. Установщики вроде
+   `npx skills add` копируют только SKILL.md — тогда сначала подтяни полный
+   репозиторий и положи недостающее рядом (`$d` — папка этого SKILL.md):
+   ```bash
+   git clone --depth 1 https://github.com/mmmontov/claude-session "$d/.src" \
+     && cp -r "$d/.src/scripts" "$d/.src/completions" "$d/" && rm -rf "$d/.src"
+   ```
 1. Запусти `scripts/install.sh` (лежит рядом с этим файлом). Он идемпотентен.
 2. Разбери вывод. Блок «Требует внимания» — реши каждую проблему:
    - нет tmux → предложи установить (`sudo apt install tmux` или аналог для
