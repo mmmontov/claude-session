@@ -4,15 +4,23 @@
 при закрытии терминала, поднимаются сами после перезагрузки, а одной из них
 можно писать прямо из Telegram с телефона.
 
+## Требования
+
+- **Linux** (или WSL на Windows, или macOS с tmux) — внутри всё работает на tmux и bash;
+  автозапуск после перезагрузки — на systemd, то есть Linux. На «голой» Windows не заработает.
+- Установленный [Claude Code](https://claude.com/claude-code).
+
 ## Установка
 
-Нужен установленный [Claude Code](https://claude.com/claude-code). Затем одна команда:
+Одна команда:
 
 ```bash
-npx skills add mmmontov/claude-session -g
+npx skills add mmmontov/claude-session -g -a claude-code
 ```
 
-(это CLI реестра [skills.sh](https://www.skills.sh/); флаг `-g` ставит скилл глобально в `~/.claude/skills`)
+(это CLI реестра [skills.sh](https://www.skills.sh/); `-g` ставит скилл глобально в `~/.claude/skills`,
+`-a claude-code` — именно для Claude Code: без этого флага CLI спросит список агентов,
+и если не отметить в нём Claude Code, скилл уедет в `~/.agents/skills` и Claude его не увидит)
 
 Без node/npm — просто через git:
 
