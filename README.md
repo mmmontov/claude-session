@@ -35,7 +35,7 @@ git clone https://github.com/mmmontov/claude-session ~/.claude/skills/claude-ses
 Claude сам установит всё необходимое, поможет создать Telegram-бота
 и первую сессию. Ничего настраивать руками не нужно.
 
-`Если claude code спросит, какой permission mode ставить, обязательно указывайте **auto**, иначе ничего работать не будет`
+`Если claude code спросит, какой permission mode ставить, обязательно указывайте auto, иначе ничего работать не будет`
 
 ## Шпаргалка (появится после установки)
 
