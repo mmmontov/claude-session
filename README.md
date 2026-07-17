@@ -82,11 +82,52 @@ cs rm <имя>                 удалить сессию
 
 Выйти из сессии, не останавливая её: `Ctrl+B`, затем `D`.
 
-## Что внутри
+## Архитектура
 
-- `SKILL.md` — скилл для Claude Code: онбординг и управление сессиями
+- **Реестр сессий**: `~/.config/claude-sessions.conf`, одна строка на сессию —
+  `имя:абсолютный_путь[:channels]`. Флаг `channels` может стоять максимум у
+  одной строки одновременно; `cs telegram <имя>` сам снимает его у прежнего
+  держателя перед тем, как выставить новому.
+- **`scripts/claude-session` (`cs`)** — единственная точка входа: читает и
+  переписывает conf, стартует/останавливает tmux-сессии, решает
+  `tmux attach` vs `tmux switch-client` по наличию `$TMUX` в окружении.
+- **Каждая сессия** — это `tmux new-session` с одним процессом
+  `claude-restart-loop.sh <dir>` внутри. Он в цикле запускает `claude -c`
+  (продолжение последнего разговора в этой директории); если процесс упал
+  раньше чем через 5 секунд — экспоненциальный backoff (2s → 4s → … → 60s
+  максимум), иначе backoff сбрасывается. Сессии с флагом `channels`
+  запускаются с `CLAUDE_CHANNELS=1`, что добавляет
+  `--channels plugin:telegram@claude-plugins-official --permission-mode auto`.
+- **Автозапуск при перезагрузке**: systemd user unit `claude-sessions.service`
+  (`Type=oneshot`, `RemainAfterExit=yes`) дёргает `claude-tmux-manager.sh`,
+  который идемпотентно проходит по conf и поднимает недостающие tmux-сессии
+  (`has-session` check, ничего не трогает у уже запущенных).
+- **Telegram — это MCP-сервер**, а не встроенная фича: `.mcp.json` плагина
+  запускает его через `command: bun`, поэтому `bun` — жёсткая зависимость,
+  которую `install.sh` ставит и линкует в `~/.local/bin` отдельно от
+  tmux/systemd. Токен бота лежит в `~/.claude/channels/telegram/.env`
+  (`TELEGRAM_BOT_TOKEN=…`), политика доступа — в
+  `~/.claude/channels/telegram/access.json`: `dmPolicy` обязательно должен
+  быть `"pairing"` (не `"allowlist"`), иначе код пейринга просто не
+  генерируется.
+- **Главная ловушка** — `remoteControlAtStartup`. Он включён у Claude Code по
+  умолчанию, и если `claude -c` в директории X стартует, пока в этой же
+  директории уже есть живой интерактивный процесс, новый процесс не
+  запускается независимо — он мостится (bridge) в уже работающий по
+  `sessionId`/`lastSessionId` из `~/.claude.json`. Флаг `--channels` в этом
+  случае физически некому применить: tmux-панель просто зеркалит текущий
+  чат вместо того, чтобы слушать Telegram. Отсюда правило: **Telegram-сессию
+  всегда заводите в отдельной директории**, которая не открыта интерактивно
+  ни в одном другом окне/сессии.
+- **`--permission-mode auto`** для channels-сессии — осознанный трейд-офф, а
+  не недосмотр: бот выполняет команды из Telegram без запроса подтверждения
+  на каждое действие, единственный гейт — пейринг через `telegram:access`.
+
+### Файлы репозитория
+
+- `SKILL.md` — скилл для Claude Code: онбординг и повседневное управление
 - `scripts/claude-session` — CLI (`cs`)
 - `scripts/claude-restart-loop.sh` — держит Claude запущенным, продолжает разговор после падений
-- `scripts/claude-tmux-manager.sh` — поднимает сессии при загрузке (systemd user unit)
-- `scripts/install.sh` — идемпотентная установка
+- `scripts/claude-tmux-manager.sh` — поднимает сессии при загрузке (вызывается из systemd unit)
+- `scripts/install.sh` — идемпотентная установка (симлинки, systemd unit, bun, bash-completion)
 - `completions/cs.bash` — tab-дополнение имён сессий
